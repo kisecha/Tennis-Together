@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tennis Together 🎾</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎾</text></svg>">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { background: #020817; color: #f8fafc; font-family: 'DM Sans', sans-serif; -webkit-font-smoothing: antialiased; }
+  input, select, button { font-family: inherit; }
+  input:focus, select:focus { outline: 2px solid #38bdf8; outline-offset: 1px; }
+  button:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #0f172a; }
+  ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+  table { border-collapse: collapse; }
+  #root { min-height: 100vh; }
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: #1e293b; color: #94a3b8; border: 1px solid #334155;
+    border-radius: 8px; padding: 10px 18px; font-size: 13px;
+    opacity: 0; transition: all 0.25s ease; pointer-events: none; z-index: 999; white-space: nowrap;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .seg { display: flex; background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; overflow: hidden; }
+  .seg button { flex: 1; padding: 7px 0; font-size: 12px; border: none; cursor: pointer; background: transparent; color: #64748b; transition: all 0.15s; font-family: 'DM Sans', sans-serif; }
+  .seg button.active { background: #38bdf8; color: #020817; font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div class="toast" id="toast"></div>
+
+<script type="text/babel">
+const { useState, useCallback, useEffect, useRef } = React;
+
+// ── localStorage ─────────────────────────────────────────────────────────────
+const LS_MEMBERS = 'tt-members';
+const LS_RECORDS = 'tt-records';
+
+function loadSavedNames() {
+  try {
+    const raw = localStorage.getItem(LS_MEMBERS);
+    if (raw) { const p = JSON.parse(raw); if (Array.isArray(p) && p.length >= 4) return p; }
+  } catch {}
+  return ['Alex', 'Jordan', 'Morgan', 'Taylor', 'Casey', 'Riley'];
+}
+function saveNames(names) { try { localStorage.setItem(LS_MEMBERS, JSON.stringify(names)); } catch {} }
+function loadRecords() { try { const r = localStorage.getItem(LS_RECORDS); return r ? JSON.parse(r) : {}; } catch { return {}; } }
+function persistRecords(rec) { try { localStorage.setItem(LS_RECORDS, JSON.stringify(rec)); } catch {} }
+
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2400);
+}
+
+// ── Algorithm ─────────────────────────────────────────────────────────────────
+function getCombinations(arr, r) {
+  if (r === 1) return arr.map(x => [x]);
+  const res = [];
+  for (let i = 0; i <= arr.length - r; i++)
+    getCombinations(arr.slice(i + 1), r - 1).forEach(sub => res.push([arr[i], ...sub]));
+  return res;
+}
+
+function generateSets(players, count, state) {
+  const n = players.length;
+  const pk = (a, b) => a < b ? `${a}_${b}` : `${b}_${a}`;
+
+  function makeInitialState() {
+    // Shuffle player order so the first set doesn't always pick players 0-3
+    const order = Array.from({ length: n }, (_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+    const playCnt = new Array(n).fill(0);
+    order.forEach((playerIdx, rank) => { playCnt[playerIdx] = rank; });
+    return {
+      playCnt, restCnt: new Array(n).fill(0),
+      lastRested: new Array(n).fill(false), consecCnt: new Array(n).fill(0),
+      pairCnt: {}, oppCnt: {}, setOffset: 0,
+    };
+  }
+
+  let { playCnt, restCnt, lastRested, consecCnt, pairCnt, oppCnt, setOffset } = state || makeInitialState();
+  playCnt=[...playCnt]; restCnt=[...restCnt]; lastRested=[...lastRested];
+  consecCnt=[...consecCnt]; pairCnt={...pairCnt}; oppCnt={...oppCnt};
+  const newSets = [], restNum = n - 4;
+
+  for (let i = 0; i < count; i++) {
+    const idx = Array.from({ length: n }, (_, x) => x);
+    let four, rest;
+    if (restNum <= 0) { four = idx; rest = []; }
+    else {
+      const mustPlay  = idx.filter(x => lastRested[x]);
+      const mustRest  = idx.filter(x => consecCnt[x] >= 2 && !mustPlay.includes(x));
+      const free      = idx.filter(x => !mustPlay.includes(x) && !mustRest.includes(x));
+      const freeSorted = [...free].sort((a, b) => playCnt[a] - playCnt[b] || restCnt[b] - restCnt[a]);
+      const candidates = [...mustPlay];
+      for (const x of freeSorted) { if (candidates.length >= 4) break; candidates.push(x); }
+      if (candidates.length < 4) {
+        const ms = [...mustRest].sort((a, b) => playCnt[a] - playCnt[b]);
+        for (const x of ms) { if (candidates.length >= 4) break; candidates.push(x); }
+      }
+      four = candidates.slice(0, 4);
+      rest = idx.filter(x => !four.includes(x));
+    }
+    let bestTeam = null, bestScore = Infinity;
+    getCombinations(four, 2).forEach(([a, b]) => {
+      const teamA = [a, b], teamB = four.filter(x => ![a, b].includes(x));
+      const pA = pairCnt[pk(a,b)]||0, pB = pairCnt[pk(teamB[0],teamB[1])]||0;
+      let oScore = 0;
+      teamA.forEach(x => teamB.forEach(y => oScore += (oppCnt[pk(x,y)]||0)));
+      const s = pA + pB + oScore * 2;
+      if (s < bestScore) { bestScore = s; bestTeam = { a: teamA, b: teamB }; }
+    });
+    if (!bestTeam) bestTeam = { a: [four[0], four[1]], b: [four[2], four[3]] };
+    const { a, b } = bestTeam;
+    pairCnt[pk(a[0],a[1])] = (pairCnt[pk(a[0],a[1])]||0) + 1;
+    pairCnt[pk(b[0],b[1])] = (pairCnt[pk(b[0],b[1])]||0) + 1;
+    a.forEach(x => b.forEach(y => oppCnt[pk(x,y)] = (oppCnt[pk(x,y)]||0) + 1));
+    [...a,...b].forEach(x => { playCnt[x]++; consecCnt[x]++; lastRested[x] = false; });
+    rest.forEach(x => { restCnt[x]++; consecCnt[x] = 0; lastRested[x] = true; });
+    newSets.push({ num: setOffset + i + 1, a, b, rest });
+  }
+  return { newSets, newState: { playCnt, restCnt, lastRested, consecCnt, pairCnt, oppCnt, setOffset: setOffset + count } };
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const COLORS = ['#38bdf8','#34d399','#f472b6','#fb923c','#a78bfa','#facc15','#4ade80','#f87171','#60a5fa','#e879f9'];
+const winPct = (w, l) => (w + l) > 0 ? Math.round(w / (w + l) * 100) : null;
+const fmtPct = v => v != null ? `${v}%` : '—';
+
+// ── ScoreInput ────────────────────────────────────────────────────────────────
+function ScoreInput({ value, onChange }) {
+  const a = value?.a ?? '', b = value?.b ?? '';
+  const set = (field, v) => { const n = v==='' ? null : Math.max(0, parseInt(v)||0); onChange({...(value||{}), [field]: n}); };
+  const sw = { display:'flex', flexDirection:'column', alignItems:'center', gap:1 };
+  const sb = { background:'none', border:'none', cursor:'pointer', fontSize:9, padding:'2px 5px', color:'#64748b', borderRadius:3 };
+  const si = { width:40, textAlign:'center', fontSize:15, fontWeight:700, border:'1.5px solid #334155', borderRadius:6, background:'#0f172a', color:'#f8fafc', padding:'5px 0', outline:'none' };
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+      <div style={sw}>
+        <button style={sb} onClick={() => set('a', (a===''?0:a)+1)}>▲</button>
+        <input style={si} value={a} onChange={e => set('a', e.target.value)} placeholder="—" />
+        <button style={sb} onClick={() => set('a', Math.max(0,(a===''?0:a)-1))}>▼</button>
+      </div>
+      <span style={{ fontSize:18, fontWeight:800, color:'#334155', userSelect:'none' }}>:</span>
+      <div style={sw}>
+        <button style={sb} onClick={() => set('b', (b===''?0:b)+1)}>▲</button>
+        <input style={si} value={b} onChange={e => set('b', e.target.value)} placeholder="—" />
+        <button style={sb} onClick={() => set('b', Math.max(0,(b===''?0:b)-1))}>▼</button>
+      </div>
+    </div>
+  );
+}
+
+// ── TeamCell ──────────────────────────────────────────────────────────────────
+function TeamCell({ players, indices, winner }) {
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+      {indices.map(i => (
+        <span key={i} style={{
+          display:'inline-block', fontSize:12, padding:'3px 9px',
+          background: winner ? '#14532d55' : '#1e293b', borderRadius:20,
+          borderLeft: `3px solid ${COLORS[i % COLORS.length]}`,
+          color: winner ? '#4ade80' : '#cbd5e1',
+        }}>{players[i]}</span>
+      ))}
+    </div>
+  );
+}
+
+// ── Mini stat block ───────────────────────────────────────────────────────────
+function StatBlock({ label, played, wins, losses, rests, wp, color, muted }) {
+  return (
+    <div>
+      <div style={{ fontSize:10, color:'#334155', marginBottom:5, textTransform:'uppercase', letterSpacing:0.8, fontWeight:600 }}>{label}</div>
+      <div style={{ display:'flex', justifyContent:'space-around', marginBottom:7 }}>
+        {[['Played',played,'#94a3b8'],['Won',wins,'#34d399'],['Lost',losses,'#f87171'],['Rest',rests,'#fb923c']].map(([l,v,c]) => (
+          <div key={l} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:1 }}>
+            <span style={{ fontSize: muted?14:18, fontWeight:700, color: muted?'#334155':c }}>{v}</span>
+            <span style={{ fontSize:9, color:'#334155' }}>{l}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ height:3, background:'#1e293b', borderRadius:2, overflow:'hidden', marginBottom:3 }}>
+        <div style={{ height:'100%', borderRadius:2, background: muted?'#1e293b':color, width:`${wp??0}%`, transition:'width 0.5s' }} />
+      </div>
+      <div style={{ textAlign:'center', fontSize:11, color: muted?'#334155':'#64748b' }}>Win rate {fmtPct(wp)}</div>
+    </div>
+  );
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+function App() {
+  const [tab, setTab]               = useState('setup');
+  const [playerNames, setPlayerNames] = useState(() => loadSavedNames());
+  const [gameMode, setGameMode]     = useState('score');
+  const [gameCount, setGameCount]   = useState(6);
+  const [players, setPlayers]       = useState([]);
+  const [sets, setSets]             = useState([]);
+  const [scores, setScores]         = useState({});
+  const [algoState, setAlgoState]   = useState(null);
+  const [config, setConfig]         = useState(null);
+  const [records, setRecords]       = useState(() => loadRecords());
+  const [statsView, setStatsView]   = useState('session');
+  const saveTimer = useRef(null);
+
+  useEffect(() => {
+    const clean = playerNames.filter(p => p.trim());
+    if (!clean.length) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => saveNames(playerNames), 600);
+  }, [playerNames]);
+
+  const sessionStats = players.map((_, i) => {
+    let played=0, wins=0, losses=0, rests=0;
+    sets.forEach((s, idx) => {
+      const sc = scores[`s${idx}`] || {};
+      const hs = sc.a != null && sc.b != null;
+      if (s.a.includes(i) || s.b.includes(i)) played++;
+      if (s.rest.includes(i)) rests++;
+      if (hs) {
+        if (s.a.includes(i)) { if (sc.a > sc.b) wins++; else if (sc.b > sc.a) losses++; }
+        if (s.b.includes(i)) { if (sc.b > sc.a) wins++; else if (sc.a > sc.b) losses++; }
+      }
+    });
+    return { name: players[i], played, wins, losses, rests, wp: winPct(wins, losses) };
+  });
+
+  function handleSaveToRecords() {
+    if (!players.length) return;
+    const updated = { ...records };
+    sessionStats.forEach(st => {
+      const prev = updated[st.name] || { played:0, wins:0, losses:0, rests:0 };
+      updated[st.name] = {
+        played:  prev.played  + st.played,
+        wins:    prev.wins    + st.wins,
+        losses:  prev.losses  + st.losses,
+        rests:   prev.rests   + st.rests,
+      };
+    });
+    setRecords(updated);
+    persistRecords(updated);
+    showToast('✓ Session saved to all-time records');
+  }
+
+  function handleResetRecords() {
+    if (!window.confirm('Reset ALL all-time records? This cannot be undone.')) return;
+    setRecords({}); persistRecords({});
+    showToast('All-time records cleared');
+  }
+
+  const addPlayer    = () => setPlayerNames(p => [...p, '']);
+  const removePlayer = i => { if (playerNames.length > 4) setPlayerNames(p => p.filter((_,j) => j !== i)); };
+  const updatePlayer = (i, v) => setPlayerNames(p => p.map((x,j) => j===i ? v : x));
+
+  function handleGenerate() {
+    const clean = playerNames.map(p => p.trim()).filter(Boolean);
+    if (clean.length < 4) { alert('Need at least 4 players.'); return; }
+    saveNames(playerNames);
+    const { newSets, newState } = generateSets(clean, 10, null);
+    setPlayers(clean); setSets(newSets); setScores({}); setAlgoState(newState);
+    setConfig({ gameMode, gameCount }); setTab('bracket');
+  }
+
+  function handleAddMore() {
+    const { newSets, newState } = generateSets(players, 10, algoState);
+    setSets(s => [...s, ...newSets]); setAlgoState(newState);
+    setTimeout(() => {
+      const rows = document.querySelectorAll('tbody tr');
+      if (rows.length) rows[rows.length - 10]?.scrollIntoView({ behavior:'smooth', block:'center' });
+    }, 100);
+  }
+
+  const updateScore = useCallback((sid, val) => setScores(s => ({ ...s, [sid]: val })), []);
+
+  const C = {
+    section:  { background:'#0f172a', border:'1px solid #1e293b', borderRadius:12, padding:'16px 18px', marginBottom:14 },
+    secTitle: { fontSize:11, fontWeight:600, color:'#64748b', marginBottom:12, textTransform:'uppercase', letterSpacing:1.2 },
+    th: { padding:'10px 11px', fontSize:10, fontWeight:600, color:'#64748b', borderBottom:'1px solid #1e293b', textTransform:'uppercase', letterSpacing:0.5, whiteSpace:'nowrap' },
+    td: { padding:'10px 11px', verticalAlign:'middle', borderBottom:'1px solid #0a1628' },
+  };
+
+  // all names = current session players + anyone in records but not in session
+  const extraNames = Object.keys(records).filter(n => !players.includes(n));
+
+  return (
+    <div style={{ minHeight:'100vh', background:'#020817', color:'#f8fafc', paddingBottom:60 }}>
+
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', gap:14, padding:'22px 22px 14px', borderBottom:'1px solid #1e293b' }}>
+        <span style={{ fontSize:32 }}>🎾</span>
+        <div>
+          <div style={{ fontSize:22, fontWeight:700, letterSpacing:-0.5 }}>Tennis Together</div>
+          <div style={{ fontSize:11, color:'#64748b', marginTop:2 }}>Doubles Match Manager</div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display:'flex', borderBottom:'1px solid #1e293b', padding:'0 14px' }}>
+        {[['setup','⚙ Setup'], ['bracket','📋 Bracket'], ['stats','📊 Stats']].map(([k, l]) => (
+          <button key={k} onClick={() => setTab(k)} style={{
+            background:'none', border:'none', cursor:'pointer',
+            color: tab===k ? '#38bdf8' : '#64748b', fontSize:13,
+            padding:'11px 16px', borderBottom: tab===k ? '2px solid #38bdf8' : '2px solid transparent',
+            marginBottom:-1, display:'flex', alignItems:'center', gap:6, fontFamily:'inherit',
+          }}>
+            {l}
+            {k==='bracket' && sets.length > 0 && (
+              <span style={{ background:'#1e3a5f', color:'#38bdf8', fontSize:10, borderRadius:10, padding:'1px 6px', fontWeight:700 }}>{sets.length}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* ── SETUP ── */}
+      {tab === 'setup' && (
+        <div style={{ padding:'18px 16px' }}>
+          <div style={C.section}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+              <div style={C.secTitle}>Players</div>
+              <button onClick={() => { saveNames(playerNames); showToast('✓ Names saved'); }} style={{ background:'none', border:'1px solid #1e293b', borderRadius:6, color:'#64748b', cursor:'pointer', padding:'4px 10px', fontSize:11 }}>
+                💾 Save
+              </button>
+            </div>
+            <div style={{ fontSize:11, color:'#334155', marginBottom:10, padding:'6px 10px', background:'#0a1628', borderRadius:6, border:'1px solid #1e293b' }}>
+              ✓ Names are saved automatically and restored on your next visit
+            </div>
+            {playerNames.map((name, i) => (
+              <div key={i} style={{ display:'flex', alignItems:'center', gap:9, marginBottom:8 }}>
+                <div style={{ width:32, height:32, borderRadius:'50%', flexShrink:0, background:COLORS[i%COLORS.length]+'2a', color:COLORS[i%COLORS.length], display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:700 }}>
+                  {name ? name[0].toUpperCase() : '?'}
+                </div>
+                <input value={name} placeholder={`Player ${i+1}`} onChange={e => updatePlayer(i, e.target.value)}
+                  style={{ flex:1, background:'#020817', border:'1px solid #1e293b', borderRadius:8, color:'#f8fafc', padding:'7px 11px', fontSize:14, outline:'none' }} />
+                <button onClick={() => removePlayer(i)} disabled={playerNames.length <= 4}
+                  style={{ background:'none', border:'1px solid #1e293b', borderRadius:6, color:'#475569', cursor:'pointer', padding:'5px 9px', fontSize:12, opacity: playerNames.length<=4?0.3:1 }}>✕</button>
+              </div>
+            ))}
+            <button onClick={addPlayer} style={{ width:'100%', background:'none', border:'1px dashed #1e293b', borderRadius:8, color:'#475569', cursor:'pointer', padding:'9px', fontSize:12, marginTop:2 }}>
+              + Add Player
+            </button>
+          </div>
+
+          <div style={C.section}>
+            <div style={C.secTitle}>Match Settings</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
+              <div>
+                <label style={{ display:'block', fontSize:11, color:'#64748b', marginBottom:5 }}>Scoring Format</label>
+                <select value={gameMode} onChange={e => setGameMode(e.target.value)}
+                  style={{ width:'100%', background:'#020817', border:'1px solid #1e293b', borderRadius:8, color:'#f8fafc', padding:'8px 11px', fontSize:13, outline:'none' }}>
+                  <option value="score">Point-based</option>
+                  <option value="set">Set-based</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:11, color:'#64748b', marginBottom:5 }}>
+                  {gameMode==='score' ? 'Games per Set' : 'Sets to Win'}
+                </label>
+                <input type="number" value={gameCount} min={1} max={99} onChange={e => setGameCount(+e.target.value)}
+                  style={{ width:'100%', background:'#020817', border:'1px solid #1e293b', borderRadius:8, color:'#f8fafc', padding:'8px 11px', fontSize:13, outline:'none' }} />
+              </div>
+            </div>
+          </div>
+
+          <button onClick={handleGenerate} style={{ width:'100%', background:'#38bdf8', border:'none', borderRadius:10, color:'#020817', fontWeight:700, fontSize:15, padding:'13px', cursor:'pointer' }}>
+            Generate Bracket →
+          </button>
+        </div>
+      )}
+
+      {/* ── BRACKET ── */}
+      {tab === 'bracket' && (
+        <div style={{ padding:'16px 14px' }}>
+          {sets.length === 0
+            ? <div style={{ textAlign:'center', padding:'3rem', color:'#475569', fontSize:14 }}>Generate a bracket in the Setup tab first.</div>
+            : (<>
+              {config && (
+                <div style={{ marginBottom:12 }}>
+                  <span style={{ fontSize:11, color:'#64748b', background:'#0f172a', border:'1px solid #1e293b', borderRadius:6, padding:'4px 10px' }}>
+                    {config.gameMode==='score'?'Point-based':'Set-based'} · {config.gameCount} {config.gameMode==='score'?'games':'sets'}
+                  </span>
+                </div>
+              )}
+              <div style={{ overflowX:'auto', borderRadius:10, border:'1px solid #1e293b' }}>
+                <table style={{ width:'100%', minWidth:540 }}>
+                  <thead>
+                    <tr style={{ background:'#0a1628' }}>
+                      {['#','Team A','','Team B','Score','Resting'].map((h, i) => (
+                        <th key={i} style={{ ...C.th, textAlign: i===2||i>=4 ? 'center' : 'left' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sets.map((s, idx) => {
+                      const sid = `s${idx}`;
+                      const sc = scores[sid] || {};
+                      const hs = sc.a != null && sc.b != null;
+                      const aW = hs && sc.a > sc.b, bW = hs && sc.b > sc.a;
+                      const isNew = idx >= sets.length - 10 && sets.length > 10;
+                      return (
+                        <tr key={idx} style={{ background: idx%2===0 ? '#050e1a' : 'transparent' }}>
+                          <td style={C.td}>
+                            <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+                              <span style={{ fontSize:12, fontWeight:700, color:'#64748b', minWidth:18 }}>{s.num}</span>
+                              {isNew && <span style={{ fontSize:9, background:'#1e3a5f', color:'#38bdf8', padding:'1px 4px', borderRadius:3, fontWeight:700 }}>NEW</span>}
+                            </div>
+                          </td>
+                          <td style={C.td}><TeamCell players={players} indices={s.a} winner={aW} /></td>
+                          <td style={{ ...C.td, textAlign:'center', color:'#1e3a5f', fontWeight:800, fontSize:11 }}>vs</td>
+                          <td style={C.td}><TeamCell players={players} indices={s.b} winner={bW} /></td>
+                          <td style={{ ...C.td, textAlign:'center' }}>
+                            <ScoreInput value={scores[sid]} onChange={v => updateScore(sid, v)} />
+                          </td>
+                          <td style={{ ...C.td, textAlign:'center' }}>
+                            <div style={{ display:'flex', flexWrap:'wrap', gap:3, justifyContent:'center' }}>
+                              {s.rest.length === 0
+                                ? <span style={{ fontSize:11, color:'#1e3a5f' }}>—</span>
+                                : s.rest.map(ri => (
+                                  <span key={ri} style={{ fontSize:11, padding:'2px 7px', border:`1px solid ${COLORS[ri%COLORS.length]}66`, borderRadius:20, color:COLORS[ri%COLORS.length] }}>
+                                    {players[ri]}
+                                  </span>
+                                ))
+                              }
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:14, gap:10, flexWrap:'wrap' }}>
+                <button onClick={handleSaveToRecords} style={{ padding:'9px 16px', border:'1px solid #38bdf8', borderRadius:8, background:'transparent', color:'#38bdf8', cursor:'pointer', fontSize:13 }}>
+                  💾 Save to Records
+                </button>
+                <button onClick={handleAddMore} style={{ background:'none', border:'1px solid #1e293b', borderRadius:8, color:'#94a3b8', cursor:'pointer', padding:'9px 18px', fontSize:13 }}>
+                  + More Matches ({sets.length+1}–{sets.length+10})
+                </button>
+              </div>
+            </>)
+          }
+        </div>
+      )}
+
+      {/* ── STATS ── */}
+      {tab === 'stats' && (
+        <div style={{ padding:'16px 14px' }}>
+          {/* segment + reset */}
+          <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:16, flexWrap:'wrap' }}>
+            <div className="seg" style={{ flex:1, maxWidth:260 }}>
+              <button className={statsView==='session'?'active':''} onClick={() => setStatsView('session')}>This Session</button>
+              <button className={statsView==='all-time'?'active':''} onClick={() => setStatsView('all-time')}>All-Time</button>
+            </div>
+            {statsView === 'all-time' && (
+              <button onClick={handleResetRecords} style={{ border:'1px solid #7f1d1d', borderRadius:7, background:'transparent', color:'#f87171', cursor:'pointer', padding:'6px 12px', fontSize:11 }}>
+                🗑 Reset All Records
+              </button>
+            )}
+          </div>
+
+          {/* THIS SESSION */}
+          {statsView === 'session' && (
+            players.length === 0
+              ? <div style={{ textAlign:'center', padding:'3rem', color:'#475569', fontSize:14 }}>Generate a bracket first.</div>
+              : <>
+                  <div style={{ fontSize:11, color:'#475569', marginBottom:12 }}>
+                    Current session only · press <strong style={{color:'#38bdf8'}}>💾 Save to Records</strong> in the Bracket tab to add to all-time
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))', gap:11 }}>
+                    {sessionStats.map((st, i) => (
+                      <div key={i} style={{ background:'#0f172a', border:'1px solid #1e293b', borderRadius:12, padding:'15px' }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:9, marginBottom:12 }}>
+                          <div style={{ width:34, height:34, borderRadius:'50%', background:COLORS[i%COLORS.length]+'2a', color:COLORS[i%COLORS.length], display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:700, flexShrink:0 }}>
+                            {st.name[0].toUpperCase()}
+                          </div>
+                          <span style={{ fontWeight:600, fontSize:14 }}>{st.name}</span>
+                        </div>
+                        <StatBlock label="Session" played={st.played} wins={st.wins} losses={st.losses} rests={st.rests} wp={st.wp} color={COLORS[i%COLORS.length]} />
+                      </div>
+                    ))}
+                  </div>
+                </>
+          )}
+
+          {/* ALL-TIME */}
+          {statsView === 'all-time' && (() => {
+            const allNames = [...players, ...extraNames];
+            if (allNames.length === 0)
+              return <div style={{ textAlign:'center', padding:'3rem', color:'#475569', fontSize:14 }}>No records yet. Play a session and hit "Save to Records" in the Bracket tab.</div>;
+            return (
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(210px, 1fr))', gap:11 }}>
+                {allNames.map((name, i) => {
+                  const color = COLORS[i % COLORS.length];
+                  const rec   = records[name]  || { played:0, wins:0, losses:0, rests:0 };
+                  const sess  = sessionStats.find(s => s.name === name) || { played:0, wins:0, losses:0, rests:0 };
+                  return (
+                    <div key={name} style={{ background:'#0f172a', border:'1px solid #1e293b', borderRadius:12, padding:'15px' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:9, marginBottom:14 }}>
+                        <div style={{ width:34, height:34, borderRadius:'50%', background:color+'2a', color, display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:700, flexShrink:0 }}>
+                          {name[0].toUpperCase()}
+                        </div>
+                        <span style={{ fontWeight:700, fontSize:15 }}>{name}</span>
+                      </div>
+                      <StatBlock label="All-Time" played={rec.played} wins={rec.wins} losses={rec.losses} rests={rec.rests} wp={winPct(rec.wins, rec.losses)} color={color} />
+                      <div style={{ borderTop:'1px solid #1e293b', margin:'12px 0' }} />
+                      <StatBlock label="This Session" played={sess.played} wins={sess.wins} losses={sess.losses} rests={sess.rests} wp={winPct(sess.wins, sess.losses)} color={color} muted />
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
